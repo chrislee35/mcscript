@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import socket, json, re, struct
+import socket, json, re, struct, math, time, sys
 from pprint import pprint
 
 class Client(object):
@@ -54,6 +54,47 @@ class Client(object):
             cmd += ' {'+opts+'}'
         return self.send_cmd(cmd)
         
+    def locate(self, user, target):
+        cmd = '/execute as {user} run locate {target}'.format(user=user, target=target)
+        resp = self.send_cmd(cmd)
+        matches = re.search('\[([\-\d\.]+), ([\-\d\.~]+), ([\-\d\.]+)\]', resp['data']['response'])
+        if not matches:
+            return None
+        nearest = [int(matches.group(1)), matches.group(2), int(matches.group(3))]
+        return nearest
+        
+    def msg(self, user, message):
+        cmd = '/msg {user} {message}'.format(user=user, message=message)
+        return self.send_cmd(cmd)
+        
+    def grant_advancement(self, user, advancement, method='only', **criterion):
+        cmd = '/advancement grant {user} {method} {advancement}'.format(user=user, method=method, advancement=advancement)
+        return self.send_cmd(cmd)
+        
+    def revoke_advancement(self, user, advancement, method='only', **criterion):
+        cmd = '/advancement revoke {user} {method} {advancement}'.format(user=user, method=method, advancement=advancement)
+        return self.send_cmd(cmd)
+        
+    def ban_user(self, user, reason=None):
+        cmd = '/ban {user}'.format(user=user)
+        if reason:
+            cmd += ' [{reason}]'.format(reason=reason)
+        return self.send_cmd(cmd)
+        
+    def unban_user(self, user):
+        cmd = '/pardon {user}'.format(user=user)
+        return self.send_cmd(cmd)
+        
+    def ban_ip(self, ip, reason=None):
+        cmd = '/ban-ip {ip}'.format(ip=ip)
+        if reason:
+            cmd += ' [{reason}]'.format(reason=reason)
+        return self.send_cmd(cmd)
+
+    def unban_ip(self, ip):
+        cmd = '/pardon-ip {ip}'.format(ip=ip)
+        return self.send_cmd(cmd)
+        
     def extract_user_position(self, userinfo, roundPosition=False):
         pos = userinfo['data']['response']['Pos']
         if roundPosition:
@@ -61,7 +102,7 @@ class Client(object):
         return pos
         
     def send_request(self, data, get_reply=True):
-        jdata = json.dumps(data)
+        jdata = json.dumps(data).encode('UTF-8')
         self.sock.sendall(struct.pack('I', len(jdata))+jdata)
         if get_reply:
             reply = self.get_message()
@@ -70,6 +111,7 @@ class Client(object):
         
     def connect(self, server_ip, server_port):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(None) # blocking io
         self.sock.connect((server_ip, server_port))
         self.running = True
         self.on_connect()
@@ -86,9 +128,13 @@ class Client(object):
     def get_message(self):
         print("reading len")
         blen = self.sock.recv(4)
+        print(blen)
         l = struct.unpack('I', blen)[0]
         print("len is %d" % l)
-        buf = ""
+        if sys.version_info.major == 3:
+            buf = b''
+        else:
+            buf = ''
         while len(buf) < l:
             buf += self.sock.recv(l-len(buf))
         data = json.loads(buf)
@@ -107,3 +153,43 @@ class Client(object):
         
     _register_command = staticmethod( _register_command )
     
+    def highlight_path(self, start_coords, angle, count, spacing, particle='flash'):
+        dx = spacing*math.cos(angle*math.pi/180)
+        dz = spacing*math.sin(angle*math.pi/180)
+        for i in range(1,count+1):
+            cmd = "/execute at @a anchored eyes run particle {particle} ^{dx} ^ ^{dz}".format(dx=dx*i, dz=dz*i, particle=particle)
+            self.send_cmd(cmd)
+            time.sleep(0.3)
+
+    def distance_and_bearing(self, coords1, coords2):
+        x1, y1, z1 = coords1
+        x2, y2, z2 = coords2
+        
+        dx = x2 - x1
+        dz = z2 - z1
+        
+        distance = math.sqrt((dx**2)+(dz**2))
+        if dz == 0:
+            if dx > 0:
+                angle = 0 # due East 
+            else:
+                angle = 180 # due West
+        elif dx == 0:
+            if dz > 0:
+                angle = -90 # due South
+            else:
+                angle = 90 # due North
+        else:
+            angle = math.atan(float(-dz)/dx)*180/math.pi
+            
+        # convert angle into compass directions
+        if angle < 0:
+            angle += 360
+        
+        bearings = ['E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE']
+        sextant = int(angle / (360.0/len(bearings)))
+
+        shifted_angle = angle + (180.0/len(bearings))
+        bearing = bearings[sextant]
+        
+        return (distance, angle, bearing)

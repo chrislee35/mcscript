@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import sys, json, time, struct, re, subprocess
 import threading
+import traceback
+
 try:
     import SocketServer
 except ModuleNotFoundError:
@@ -24,7 +26,8 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
                 request = self.get_message()
                 self.process_request(request)
         except Exception as e:
-            pass
+            track = traceback.format_exc()
+            print(track)
         finally:
             self.deregister()
             
@@ -49,7 +52,10 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         blen = self.request.recv(4)
         l = struct.unpack('I', blen)[0]
         self.debug("length = %d" % l)
-        buf = ""
+        if sys.version_info.major == 3:
+            buf = b''
+        else:
+            buf = ''
         while len(buf) < l:
             buf += self.request.recv(l-len(buf))
         data = json.loads(buf)
@@ -120,7 +126,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
             self.server.registration_lock.release()
             
             self.send_success({'message': '%d commands registered' % len(registrations.keys())})
-            pprint(self.server.cmds)
+            #pprint(self.server.cmds)
         
     def execute_cmd(self, request):
         response = self.server.mc.exec_command(request['cmd'])
@@ -137,6 +143,8 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         self.send_payload(json.dumps(request))
         
     def send_payload(self, payload):
+        if sys.version_info.major == 3:
+            payload = payload.encode('UTF-8')
         self.request.sendall(struct.pack('I', len(payload))+payload)
         
     def send_success(self, data=None):
@@ -201,6 +209,11 @@ class MCLauncher:
     def wait_for_command(self):
         while self.running:
             line = self.mc_out.readline()
+            if type(line) == bytes:
+                line = line.decode('UTF-8')
+            elif type(line) == unicode:
+                line = str(line)
+                
             if line == '':
                 continue
             elif line == None:
@@ -225,7 +238,7 @@ class MCLauncher:
             else:
                 # if a thread is waiting on an answer
                 if self.ans_lock.locked():
-                    print("there's a thread awaiting an answer")
+                    #print("there's a thread awaiting an answer")
                     # put the line in the answer slot
                     self.answer = line
                     # release the answer lock
@@ -233,22 +246,25 @@ class MCLauncher:
         
     def exec_command(self, cmd):
         # acquire the cmd and answer locks
-        print("acquiring both locks")
+        #print("acquiring both locks")
         self.cmd_lock.acquire()
-        print("acquiring answer lock")
+        #print("acquiring answer lock")
         self.ans_lock.acquire()
         # submit the cmd
-        print("writing cmd: %s" % cmd)
-        self.mc_in.write(cmd+'\n')
+        #print("writing cmd: %s" % cmd)
+        if sys.version_info.major == 3:
+            self.mc_in.write(cmd.encode('UTF-8')+b'\n')
+        else:
+            self.mc_in.write(cmd+'\n')
         self.mc_in.flush()
         # wait for the answer lock to unlock (by the wait_for_command block)
-        print("waiting for answer lock")
+        #print("waiting for answer lock")
         self.ans_lock.acquire()
         # get the answer
         ans = self.answer
-        print("got answer: %s" % ans)
+        #print("got answer: %s" % ans)
         # release both locks
-        print("releasing both locks")
+        #print("releasing both locks")
         self.ans_lock.release()
         self.cmd_lock.release()
         return ans

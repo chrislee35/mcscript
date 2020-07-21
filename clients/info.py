@@ -11,7 +11,7 @@ class InfoClient(Client):
         },
         {
             'trigger': 'locate',
-            'callback': 'self.locate',
+            'callback': 'self.mylocate',
             'mutual': 'last_only',
         },
         {
@@ -25,12 +25,19 @@ class InfoClient(Client):
         x,y,z = self.extract_user_position(userinfo, roundPosition=True)
         self.send_cmd('/msg {user} You are at [x={x}, y={y}, z={z}]'.format(user=user, x=x, y=y, z=z))
         
-    def locate(self, user, trigger, args):
+    def mylocate(self, user, trigger, args):
         if args and len(args) > 0:
-            resp = self.send_cmd('/locate {args}'.format(args=args))
-            print(resp)
-            reply = resp['data']['response'].split(': ', 1)[1]
-            self.send_cmd('/msg {user} {reply}'.format(user=user, reply=reply))
+            target_coords = self.locate(user, args)
+            if not target_coords:
+                self.msg(user, 'cannot find %s' % args)
+                return
+            userinfo = self.get_user_info(user)
+            player_coords = self.extract_user_position(userinfo)
+            distance, angle, bearing = self.distance_and_bearing(player_coords, target_coords)
+            distance = int(distance)
+            if distance > 100:
+                self.highlight_path( player_coords, angle, 6, 5 )
+            self.msg(user, '%s is %s (%d blocks away)' % (args, bearing, distance))
         
     def on_connect(self):
         resp = self.send_cmd('/say info module is online')
@@ -46,42 +53,13 @@ class InfoClient(Client):
             userinfo2 = self.get_user_info(args)
             x2,y2,z2 = self.extract_user_position(userinfo2)
             
-            distance, bearing = self.distance_and_bearing((x1,y1,z2), (x2,y2,z2))
+            distance, angle, bearing = self.distance_and_bearing((x1,y1,z2), (x2,y2,z2))
+            distance = int(distance/30)*30
             self.send_cmd('/msg {user} {args} is approximate {distance} blocks at a bearing of {bearing}'.format(user=user, reply=reply))
-
-    def distance_and_bearing(self, coords1, coords2):
-        x1, y1, z1 = coords1
-        x2, y2, x2 = coords2
-        
-        dx = x2 - x1
-        dz = z2 - z1
-        
-        distance = int(round(math.sqrt((dx**2)+(dz**2))/30))*30
-        if dz == 0:
-            if dx > 0:
-                angle = 0 # due East 
-            else:
-                angle = 180 # due West
-        elif dx == 0:
-            if dz > 0:
-                angle = -90 # due South
-            else:
-                angle = 90 # due North
-        else:
-            angle = math.atan(float(-dz)/dx)*180/math.pi
             
-        # convert angle into compass directions
-        if angle < 0:
-            angle += 360
-        
-        bearings = ['E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE']
-        sextant = int(angle / (360.0/len(bearings)))
+            if distance > 100:
+                self.highlight_path( (x1,y1,z1), angle, 6, 5 )
 
-        shifted_angle += 180.0/len(bearings)
-        bearing = bearings[sextant]
-        
-        return (distance, bearing)
-        
 if __name__ == "__main__":
     tc = InfoClient()
     tc.connect("localhost", 55115)
