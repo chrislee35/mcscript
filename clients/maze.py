@@ -11,32 +11,22 @@ class MazeClient(Client):
         },
     ]
     def generate_maze(self, user, trigger, args):
+        """!maze [width] [length] [height] [walls_block] [floor_block]"""
+        
         userinfo = self.get_user_info(user)
         x,y,z = self.extract_user_position(userinfo, roundPosition=True)
-        w = 12
-        l = 20
-        walls = 'minecraft:hay_block'
-        floor = 'minecraft:grass_block'
-        if args and len(args) > 0:
-            pargs = args.split(' ')
-            if len(pargs) > 0:
-                w = int(pargs[0])
-            if len(pargs) > 1:
-                l = int(pargs[1])
-            if len(pargs) > 2:
-                walls = pargs[2]
-            if len(pargs) > 3:
-                floor = pargs[3]
+        w, l, height, walls, floor = self.parse_args(args, [12, 20, 3, 'minecraft:hay_block', 'minecraft:grass_block'])
         maze = MazeClient.make_maze(w, l)
         lines = maze.split('\n')
+        self.fill((x,y,z), (x+len(lines)-1, y+height-1, z+len(lines[0])-1), 'minecraft:air')
         for i in range(len(lines)):
             for j in range(len(lines[i])):
                 self.setblock(x+i, y-1, z+j, floor)
-                for k in range(3):
+                for k in range(height):
                     if lines[i][j] == ' ':
-                        self.setblock(x+i, y+k, z+j, 'minecraft:air')
+                        pass
                     else:
-                        self.setblock(x+i, y+k, z+j, walls)
+                        self.fill((x+i, y, z+j), (x+i, y+height, z+j), walls)
 
     @staticmethod
     def make_maze(w = 16, h = 8):

@@ -27,6 +27,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
                 self.process_request(request)
         except Exception as e:
             track = traceback.format_exc()
+            running = False
             print(track)
         finally:
             self.deregister()
@@ -39,12 +40,17 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         self.server.registration_lock.acquire()
         self.debug("deregistering client")
         cmds = self.server.cmds
-        for trigger in cmds.keys():
+        keys = cmds.keys()
+        to_remove = []
+        for trigger in keys:
             cmd = cmds[trigger]
             if self in cmd['clients']:
                 cmd['clients'].remove(self)
             if len(cmd['clients']) == 0:
-                cmds.pop(trigger)
+                to_remove.append(trigger)
+                
+        for trigger in to_remove:
+            cmds.pop(trigger)
         self.server.registration_lock.release()
                 
     def get_message(self):
@@ -59,7 +65,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         while len(buf) < l:
             buf += self.request.recv(l-len(buf))
         data = json.loads(buf)
-        pprint(data)
+        self.debug(data)
         return data
             
     def process_request(self, request):
@@ -111,8 +117,12 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
                         return
                     else:
                         registrations[cmd['trigger']] = { 'mutual': cmd['mutual'], 'clients': [self] }
+                        if cmd.get('help'):
+                            registrations[cmd['trigger']]['help'] = cmd['help']
                 else:
                     registrations[cmd['trigger']] = { 'mutual': cmd['mutual'], 'clients': [self] }
+                    if cmd.get('help'):
+                        registrations[cmd['trigger']]['help'] = cmd['help']
             
             self.server.registration_lock.acquire()
             for trigger in registrations:
@@ -123,14 +133,21 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
                         self.server.cmds[trigger]['clients'] = [self]
                 else:
                     self.server.cmds[trigger] = registrations[trigger]
+                    
+                if registrations[trigger].get('help'):
+                    self.server.cmds[trigger]['help'] = registrations[trigger]['help']
             self.server.registration_lock.release()
             
             self.send_success({'message': '%d commands registered' % len(registrations.keys())})
-            #pprint(self.server.cmds)
+            pprint(self.server.cmds)
         
     def execute_cmd(self, request):
-        response = self.server.mc.exec_command(request['cmd'])
-        self.send_success({'response': response})
+        if request.get('no_reply'):
+            self.server.mc.exec_command(request['cmd'], True)
+            self.send_success(None)
+        else:
+            response = self.server.mc.exec_command(request['cmd'])
+            self.send_success({'response': response})
         
     def send_trigger(self, user, trigger, args=None):
         request = {
@@ -141,7 +158,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         if args:
             request['args'] = args
         self.send_payload(json.dumps(request))
-        
+
     def send_payload(self, payload):
         if sys.version_info.major == 3:
             payload = payload.encode('UTF-8')
@@ -151,6 +168,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         self.send_payload(self.json_success(data))
         
     def send_error(self, error):
+        self.debug(error)
         self.send_payload(self.json_error(error))
         
     def json_success(self, data=None):
@@ -170,19 +188,33 @@ class MCScriptServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
         self.cmds = {}
         self.registration_lock = threading.Lock()
         
+    def msg(self, user, message):
+        self.mc.exec_command("/msg {user} {message}".format(user=user, message=message), True)
+        
     def process_trigger(self, user, trigger, args=None):
-        if not self.cmds.get(trigger):
-            print("No client found for trigger: {trigger}".format(trigger=trigger))
-            return
-            
-        for client in self.cmds[trigger]['clients']:
-            try:
-                client.send_trigger(user, trigger, args)
-            except Exception:
-                client.deregister()
-                
+        if trigger == "help":
+            if not args:
+                self.msg(user, "available triggers: {cmds}".format(cmds=" ".join(self.cmds.keys())))
+            else:
+                if not self.cmds.get(args):
+                    self.msg(user, "unknown trigger: {args}".format(args=args))
+                else:
+                    h = self.cmds[args].get('help')
+                    if not h:
+                        self.msg(user, "{args} has no help".format(user=user, args=args))
+                    else:
+                        self.msg(user, h)
+        elif not self.cmds.get(trigger):
+            self.msg(user, "unknown trigger: {trigger}".format(trigger=trigger))
+        else:
+            for client in self.cmds[trigger]['clients']:
+                try:
+                    client.send_trigger(user, trigger, args)
+                except Exception:
+                    client.deregister()
 
 class MCLauncher:
+    DEBUG = True
     RE_PLAYER_CMD=re.compile('<([^>]+)> \!([a-z_]+)(.*)\n')
     def __init__(self, mc_launch_command):
         self.mc_launch_command = mc_launch_command
@@ -201,10 +233,15 @@ class MCLauncher:
     def launch_minecraft(self):
         args = shlex.split(self.mc_launch_command)
         bufsize = 1 # line buffered
+        self.debug('starting MC: %s' % self.mc_launch_command)
         p = subprocess.Popen(args, bufsize=bufsize, stdin=PIPE, stdout=PIPE, close_fds=True)
         self.mc_proc = p
         self.mc_out = p.stdout
         self.mc_in = p.stdin
+        
+    def debug(self, message):
+        if self.DEBUG:
+            print(message)
     
     def wait_for_command(self):
         while self.running:
@@ -238,15 +275,16 @@ class MCLauncher:
             else:
                 # if a thread is waiting on an answer
                 if self.ans_lock.locked():
-                    #print("there's a thread awaiting an answer")
+                    self.debug("there's a thread awaiting an answer")
                     # put the line in the answer slot
                     self.answer = line
                     # release the answer lock
                     self.ans_lock.release()
         
-    def exec_command(self, cmd):
+    def exec_command(self, cmd, no_reply=False):
         # acquire the cmd and answer locks
-        #print("acquiring both locks")
+        self.debug("executing cmd: {cmd}".format(cmd=cmd))
+        self.debug("acquiring both locks")
         self.cmd_lock.acquire()
         #print("acquiring answer lock")
         self.ans_lock.acquire()
@@ -258,14 +296,18 @@ class MCLauncher:
             self.mc_in.write(cmd+'\n')
         self.mc_in.flush()
         # wait for the answer lock to unlock (by the wait_for_command block)
-        #print("waiting for answer lock")
-        self.ans_lock.acquire()
-        # get the answer
-        ans = self.answer
-        #print("got answer: %s" % ans)
+        if no_reply:
+            ans = None
+        else:
+            self.debug("waiting for answer lock")
+            self.ans_lock.acquire()
+            # get the answer
+            ans = self.answer
+            self.debug("got answer: %s" % ans)
         # release both locks
-        #print("releasing both locks")
-        self.ans_lock.release()
+        self.debug("releasing both locks")
+        if self.ans_lock.locked():
+            self.ans_lock.release()
         self.cmd_lock.release()
         return ans
         

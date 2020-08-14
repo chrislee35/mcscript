@@ -17,21 +17,20 @@ class Client(object):
     def add_command(self, trigger, callback, mutual='first_only'):
         if not re.match('[a-z_]+', trigger):
             return False
-        self.commands.append( { 'trigger': trigger, 'mutual': mutual } )
+        self.commands.append( { 'trigger': trigger, 'mutual': mutual, 'help': callback.__doc__ } )
         self.callbacks[trigger] = callback
         
     def register(self):
         if not self.sock:
             return False
         rep = self.send_request({'type': 'register', 'commands': self.commands})
-        pprint(rep)
         if rep['status'] == 'error':
             self.last_error = rep['error']
             return False
         return True
         
-    def send_cmd(self, cmd):
-        request = { 'type': 'command', 'cmd': cmd }
+    def send_cmd(self, cmd, no_wait=False):
+        request = { 'type': 'command', 'cmd': cmd, 'no_wait': no_wait }
         reply = self.send_request(request)
         return reply
         
@@ -46,6 +45,34 @@ class Client(object):
             opts = ','.join(['%s=%s' % (x,kwargs[x]) for x in kwargs.keys()])
             cmd += '['+opts+']'
         return self.send_cmd(cmd)
+        
+    def fill(self, coord1, coord2, block, oldBlockHandling='replace'):
+        x1,y1,z1 = coord1
+        x2,y2,z2 = coord2
+        vol = sum([ abs(coord1[i]-coord2[i]+1) for i in range(len(coord1))])
+        if vol >= 32768:
+            # find the greatest dimension, cut it in half and do two fill commands
+            cut = 0
+            max_d = 0
+            for i in range(len(coord1)):
+                if abs(coord1[i]-coord2[i]+1) > max_d:
+                    max_d = abs(coord1[i]-coord2[i]+1)
+                    cut = i
+            mid = int((coord1[cut] - coord2[cut])/2)
+            midcoord2 = coord2.copy()
+            midcoord2[cut] = mid
+            midcoord1 = coord1.copy()
+            midcoord1[cut] = mid
+            self.fill(coord1, midcoord2, block, oldBlockHandling)
+            self.fill(midcoord1, coord2, block, oldBlockHandling)
+        else:
+            cmd = '/fill {x1} {y1} {z1} {x2} {y2} {z2} {block} {handling}'.format(
+                x1 = x1, y1 = y1, z1 = z1,
+                x2 = x2, y2 = y2, z2 = z2,
+                block = block,
+                handling = oldBlockHandling
+            )
+            return self.send_cmd(cmd)
         
     def summon(self, x, y, z, mob, **kwargs):
         cmd = '/summon {mob} {x} {y} {z}'.format(x=x, y=y, z=z, mob=mob)
@@ -63,9 +90,15 @@ class Client(object):
         nearest = [int(matches.group(1)), matches.group(2), int(matches.group(3))]
         return nearest
         
+    def teleport(self, user, coords):
+        cmd = '/teleport {user} {x} {y} {z}'.format(user=user, x=coords['x'], y=coords['y'], z=coords['z'])
+        resp = self.send_cmd(cmd)
+        print(resp)
+        return True
+        
     def msg(self, user, message):
         cmd = '/msg {user} {message}'.format(user=user, message=message)
-        return self.send_cmd(cmd)
+        return self.send_cmd(cmd, True)
         
     def grant_advancement(self, user, advancement, method='only', **criterion):
         cmd = '/advancement grant {user} {method} {advancement}'.format(user=user, method=method, advancement=advancement)
@@ -100,6 +133,25 @@ class Client(object):
         if roundPosition:
             pos = [int(round(x)) for x in pos]
         return pos
+        
+    def parse_args(self, args, defaults=None):
+        if not defaults and not args:
+            return None
+        if not defaults and len(args) == 0:
+            return None
+            
+        d = defaults
+        if not args or len(args) == 0:
+            return d
+
+        a = args.split(' ')
+        if not defaults:
+            return a
+
+        for i in range(len(a)):
+            d[i] = type(d[i])(a[i])
+        
+        return d
         
     def send_request(self, data, get_reply=True):
         jdata = json.dumps(data).encode('UTF-8')
@@ -148,7 +200,7 @@ class Client(object):
         pass
         
     def _register_command(self, func, trigger, mutual):
-        self.add_command(trigger, fun, mutual)
+        self.add_command(trigger, func, mutual)
         return func
         
     _register_command = staticmethod( _register_command )
