@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import sys, json, time, struct, re, subprocess
+import sys, json, time, struct, re, subprocess, os, glob
 import threading
 import traceback
 
@@ -79,11 +79,15 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
         elif t == 'command':
             self.debug("processing command")
             response = self.server.mc.exec_command(request['cmd'])
-            self.send_success({'type': 'command_reponse', 'response': response})
+            self.send_success({'type': 'command_response', 'response': response})
+        elif t == 'list_structures':
+            self.debug("processing list_structures request")
+            structures = [":".join(x.replace("world/generated/","").replace("/structures/", "/").replace('.nbt','').split('/')) for x in glob.glob("world/generated/*/structures/*.nbt")]
+            self.send_success({'type': 'list_structures_response', 'structures': structures})
         elif t == 'userinfo':
             self.debug("processing userinfo")
             response = self.server.mc.get_user_information(request['user'])
-            self.send_success({'type': 'userinfo_reponse', 'response': response})
+            self.send_success({'type': 'userinfo_response', 'response': response})
         else:
             # invalid request
             self.send_error('request type unknown: %s' % request['type'])
@@ -139,7 +143,7 @@ class MCScriptClientRequestHandler(SocketServer.BaseRequestHandler):
             self.server.registration_lock.release()
             
             self.send_success({'message': '%d commands registered' % len(registrations.keys())})
-            pprint(self.server.cmds)
+            #pprint(self.server.cmds)
         
     def execute_cmd(self, request):
         if request.get('no_reply'):

@@ -193,6 +193,11 @@ class Client(object):
         pprint(data)
         return data
         
+    def server_structures(self):
+        request = { 'type': 'list_structures' }
+        reply = self.send_request(request)
+        return [x.replace('minecraft:', '') for x in reply['data']['structures']]
+        
     def on_connect(self):
         pass
         
